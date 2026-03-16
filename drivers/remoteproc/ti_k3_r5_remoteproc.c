@@ -590,6 +590,9 @@ static int k3_r5_resume(struct rproc *rproc)
 	} else {
 		dev_info(dev, "Core is off in resume\n");
 		/* restore device configuration */
+		ret = ti_sci_proc_request(core->tsp);
+		if (ret)
+			dev_err(dev, "proc request failed: %d\n", ret);
 		ret = ti_sci_proc_set_config(core->tsp, core->boot_vec,
 						     core->set_cfg, core->clr_cfg);
 		if (ret)
@@ -685,6 +688,12 @@ static int k3_r5_rproc_prepare(struct rproc *rproc)
 	bool mem_init_dis;
 	int ret;
 
+	ret = ti_sci_proc_request(core->tsp);
+	if (ret < 0) {
+		dev_err(dev, "ti_sci_proc_request failed, ret = %d\n", ret);
+		return ret;
+	}
+
 	/*
 	 * R5 cores require to be powered on sequentially, core0 should be in
 	 * higher power state than core1 in a cluster. So, wait for core0 to
@@ -756,6 +765,13 @@ static int k3_r5_rproc_prepare(struct rproc *rproc)
 	return 0;
 }
 
+static void k3_r5_release_tsp(void *data)
+{
+	struct ti_sci_proc *tsp = data;
+
+	ti_sci_proc_release(tsp);
+}
+
 /*
  * This function implements the .unprepare() ops and performs the complimentary
  * operations to that of the .prepare() ops. The function is used to assert the
@@ -816,6 +832,8 @@ static int k3_r5_rproc_unprepare(struct rproc *rproc)
 
 	if (core == core1)
 		wake_up_interruptible(&cluster->core_transition);
+
+	k3_r5_release_tsp(core->tsp);
 
 	return ret;
 }
@@ -1572,6 +1590,8 @@ init_rmem:
 			goto out;
 		}
 
+		k3_r5_release_tsp(core->tsp);
+
 		ret = devm_rproc_add(dev, rproc);
 		if (ret) {
 			dev_err_probe(dev, ret, "rproc_add failed\n");
@@ -1773,13 +1793,6 @@ static int k3_r5_core_of_get_sram_memories(struct platform_device *pdev,
 	core->num_sram = num_sram;
 
 	return 0;
-}
-
-static void k3_r5_release_tsp(void *data)
-{
-	struct ti_sci_proc *tsp = data;
-
-	ti_sci_proc_release(tsp);
 }
 
 static int k3_r5_core_of_init(struct platform_device *pdev)
