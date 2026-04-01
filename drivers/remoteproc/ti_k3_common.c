@@ -760,6 +760,9 @@ int k3_rproc_resume(struct rproc *rproc)
 		}
 	} else {
 		dev_dbg(dev, "remote core is off in resume\n");
+		ret = ti_sci_proc_request(kproc->tsp);
+		if (ret)
+			dev_err(dev, "proc request failed: %d\n", ret);
 		k3_rproc_reset(kproc);
 		rproc_boot(rproc);
 	}
