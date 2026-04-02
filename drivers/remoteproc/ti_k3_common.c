@@ -694,7 +694,8 @@ int k3_rproc_suspend(struct rproc *rproc)
 	struct device *dev = kproc->dev;
 	int ret = 0;
 
-	if (rproc->state != RPROC_RUNNING)
+	if (rproc->state != RPROC_RUNNING &&
+	    (!kproc->data->suspend_ipc_only || rproc->state != RPROC_ATTACHED))
 		return ret;
 
 	reinit_completion(&kproc->suspend_comp);
@@ -761,9 +762,9 @@ int k3_rproc_resume(struct rproc *rproc)
 	} else {
 		dev_dbg(dev, "remote core is off in resume\n");
 		k3_rproc_reset(kproc);
-		rproc_boot(rproc);
 	}
 
+	rproc_boot(rproc);
 	kproc->rproc->state = RPROC_RUNNING;
 
 	return 0;
