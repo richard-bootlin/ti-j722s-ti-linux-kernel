@@ -841,6 +841,96 @@ static void k3_r5_adjust_tcm_sizes(struct k3_rproc *kproc)
 	}
 }
 
+static int k3_r5_rproc_configure_mode(struct k3_rproc *kproc);
+
+static int k3_r5_rproc_resume(struct rproc *rproc)
+{
+	struct k3_rproc *kproc = rproc->priv;
+	bool cstatus = false;
+	struct device *dev = kproc->dev;
+	int ret = 0;
+
+	dev_pm_qos_update_request(&kproc->qos_req,
+				  PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+
+	if (rproc->state != RPROC_SUSPENDED)
+		return 0;
+
+	ret = k3_rproc_get_core_status(kproc, &cstatus);
+	if (ret) {
+		dev_err(dev, "failed to get core status: %d\n", ret);
+		return ret;
+	}
+
+	if (cstatus) {
+		/* Device is ON/ACTIVE */
+		dev_dbg(dev, "remote core is already on in resume\n");
+		ret = mbox_send_message(kproc->mbox, (void *)(uintptr_t)RP_MBOX_ECHO_REQUEST);
+		if (ret < 0) {
+			dev_err(kproc->dev, "PM mbox_send_message failed: %d\n", ret);
+			return ret;
+		}
+	} else {
+		dev_dbg(dev, "remote core is off in resume\n");
+		ret = ti_sci_proc_request(kproc->tsp);
+		if (ret)
+			dev_err(dev, "proc request failed: %d\n", ret);
+		k3_rproc_reset(kproc);
+
+		ret = k3_r5_rproc_configure_mode(kproc);
+		if (ret < 0)
+			return -EBUSY;
+
+		/*
+		 * ret > 0 for IPC-only mode
+		 * ret == 0 for remote proc mode
+		 */
+		if (ret == 0) {
+			/*
+			 * remote proc looses its configuration when powered off.
+			 * So, we have to configure it again on resume.
+			 */
+			ret = k3_r5_rproc_configure(kproc);
+			if (ret < 0) {
+				dev_err(kproc->dev,
+					"k3_r5_rproc_configure failed (%d)\n", ret);
+				return -EBUSY;
+			}
+		}
+		rproc_boot(rproc);
+	}
+
+	kproc->rproc->state = RPROC_RUNNING;
+
+	return 0;
+}
+
+/**
+ * PM notifier call.
+ * This is a callback function for PM notifications. On a resume completion
+ * i.e after all the resume driver calls are handled on PM_POST_SUSPEND,
+ * on a deep sleep the remote core is rebooted.
+ */
+static int k3_r5_rproc_pm_notifier_call(struct notifier_block *bl,
+					unsigned long state, void *unused)
+{
+	struct k3_rproc *kproc = container_of(bl, struct k3_rproc, pm_notifier);
+	struct rproc *rproc = kproc->rproc;
+
+	switch (state) {
+	case PM_HIBERNATION_PREPARE:
+	case PM_RESTORE_PREPARE:
+	case PM_SUSPEND_PREPARE:
+		break;
+	case PM_POST_HIBERNATION:
+	case PM_POST_RESTORE:
+	case PM_POST_SUSPEND:
+		if (rproc->state == RPROC_SUSPENDED)
+			return k3_r5_rproc_resume(rproc);
+		break;
+	}
+	return 0;
+}
 /*
  * This function checks and configures a R5F core for IPC-only or remoteproc
  * mode. The driver is configured to be in IPC-only mode for a R5F core when
@@ -936,17 +1026,13 @@ static int k3_r5_rproc_configure_mode(struct k3_rproc *kproc)
 						k3_get_loaded_rsc_table;
 	} else if (!c_state) {
 		dev_info(cdev, "configured R5F for remoteproc mode\n");
-		/* add support for suspend/resume */
-		kproc->pm_notifier.notifier_call = k3_rproc_pm_notifier_call;
-		register_pm_notifier(&kproc->pm_notifier);
-		kproc->late_pm = true;
-		ret = dev_pm_qos_add_request(cdev, &kproc->qos_req, DEV_PM_QOS_RESUME_LATENCY,
-					     PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
-		if (ret < 0)
-			return ret;
-		ret = devm_add_action_or_reset(cdev, k3_remove_pm_qos_request, kproc);
-		if (ret)
-			return ret;
+		kproc->rproc->ops->prepare = k3_r5_rproc_prepare;
+		kproc->rproc->ops->unprepare = k3_r5_rproc_unprepare;
+		kproc->rproc->ops->start = k3_r5_rproc_start;
+		kproc->rproc->ops->stop	= k3_r5_rproc_stop;
+		kproc->rproc->ops->attach = NULL;
+		kproc->rproc->ops->detach = NULL;
+		kproc->rproc->ops->get_loaded_rsc_table = NULL;
 		ipc_only = 0;
 	} else {
 		dev_err(cdev, "mismatched mode: local_reset = %s, module_reset = %s, core_state = %s\n",
@@ -954,6 +1040,36 @@ static int k3_r5_rproc_configure_mode(struct k3_rproc *kproc)
 			c_state ? "deasserted" : "asserted",
 			halted ? "halted" : "unhalted");
 		return -EINVAL;
+	}
+
+	/*
+	 * Add support for suspend/resume:
+	 * Use the common notifiers if we suspend only R5F in remoteproc mode
+	 * or the specific notifiers if we suspend R5F in remoteproc or
+	 * IPC only mode
+	 */
+	if (!kproc->data->suspend_ipc_only && !ipc_only) {
+		kproc->pm_notifier.notifier_call = k3_rproc_pm_notifier_call;
+		register_pm_notifier(&kproc->pm_notifier);
+	}
+
+	if (kproc->data->suspend_ipc_only && !kproc->pm_notifier.notifier_call) {
+		kproc->pm_notifier.notifier_call = k3_r5_rproc_pm_notifier_call;
+		register_pm_notifier(&kproc->pm_notifier);
+	}
+
+	kproc->late_pm = true;
+
+	if (!dev_pm_qos_request_active(&kproc->qos_req) &&
+	    (kproc->data->suspend_ipc_only || !ipc_only)) {
+		ret = dev_pm_qos_add_request(cdev, &kproc->qos_req,
+					     DEV_PM_QOS_RESUME_LATENCY,
+					     PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		if (ret < 0)
+			return ret;
+		ret = devm_add_action_or_reset(cdev, k3_remove_pm_qos_request, kproc);
+		if (ret)
+			return ret;
 	}
 
 	/* fixup TCMs, cluster & core flags to actual values in IPC-only mode */
@@ -1173,7 +1289,8 @@ static int k3_r5_cluster_rproc_init(struct platform_device *pdev)
 		ret = k3_r5_rproc_configure_mode(kproc);
 		if (ret < 0)
 			goto out;
-		if (ret)
+		/* k3_r5_rproc_configure_mode() returns 1 for IPC-only */
+		if (ret && !kproc->data->suspend_ipc_only)
 			goto init_rmem;
 
 		ret = k3_r5_rproc_configure(kproc);
@@ -1509,6 +1626,14 @@ static const struct k3_rproc_dev_data r5_data = {
 	.uses_lreset = true,
 };
 
+static const struct k3_rproc_dev_data r5_jacinto_data = {
+	.mems = r5_mems,
+	.num_mems = ARRAY_SIZE(r5_mems),
+	.boot_align_addr = 0,
+	.uses_lreset = true,
+	.suspend_ipc_only = true,
+};
+
 static const struct k3_r5_soc_data am65_j721e_soc_data = {
 	.tcm_is_double = false,
 	.tcm_ecc_autoinit = false,
@@ -1541,6 +1666,14 @@ static const struct k3_r5_soc_data am62_soc_data = {
 	.core_data = &r5_data,
 };
 
+static const struct k3_r5_soc_data j722s_soc_data = {
+	.tcm_is_double = false,
+	.tcm_ecc_autoinit = true,
+	.single_cpu_mode = false,
+	.is_single_core = true,
+	.core_data = &r5_jacinto_data,
+};
+
 static const struct of_device_id k3_r5_of_match[] = {
 	{ .compatible = "ti,am654-r5fss", .data = &am65_j721e_soc_data, },
 	{ .compatible = "ti,j721e-r5fss", .data = &am65_j721e_soc_data, },
@@ -1548,6 +1681,7 @@ static const struct of_device_id k3_r5_of_match[] = {
 	{ .compatible = "ti,am64-r5fss",  .data = &am64_soc_data, },
 	{ .compatible = "ti,am62-r5fss",  .data = &am62_soc_data, },
 	{ .compatible = "ti,j721s2-r5fss",  .data = &j7200_j721s2_soc_data, },
+	{ .compatible = "ti,j722s-r5fss",  .data = &j722s_soc_data, },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, k3_r5_of_match);

@@ -54,12 +54,14 @@ struct k3_rproc_mem_data {
  * @num_mems: number of memory regions in @mems
  * @boot_align_addr: boot vector address alignment granularity
  * @uses_lreset: flag to denote the need for local reset management
+ * @suspend_ipc_only: suspend and resume IPC-only cores
  */
 struct k3_rproc_dev_data {
 	const struct k3_rproc_mem_data *mems;
 	u32 num_mems;
 	u32 boot_align_addr;
 	bool uses_lreset;
+	bool suspend_ipc_only;
 };
 
 /**
@@ -106,6 +108,7 @@ struct k3_rproc {
 	struct dev_pm_qos_request qos_req;
 };
 
+int k3_rproc_get_core_status(struct k3_rproc *core, bool *cstatus);
 void k3_rproc_mbox_callback(struct mbox_client *client, void *data);
 void k3_rproc_kick(struct rproc *rproc, int vqid);
 int k3_rproc_reset(struct k3_rproc *kproc);

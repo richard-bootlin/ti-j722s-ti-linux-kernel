@@ -41,14 +41,14 @@
 #include "ti_k3_common.h"
 
 /**
- * get_core_status - local utility function to check core status
+ * k3_rproc_get_core_status - local utility function to check core status
  * @core: remote core pointer used for checking core status
  * @cstatus: core status
  *
  * This utility function is invoked by the resume handler to get remote core
  * status.
  */
-static int get_core_status(struct k3_rproc *core, bool *cstatus)
+int k3_rproc_get_core_status(struct k3_rproc *core, bool *cstatus)
 {
 	const struct ti_sci_handle *ti_sci = core->ti_sci;
 	bool r_state = false, c_state = false;
@@ -64,6 +64,7 @@ static int get_core_status(struct k3_rproc *core, bool *cstatus)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(k3_rproc_get_core_status);
 
 /**
  * k3_rproc_mbox_callback() - inbound mailbox message handler
@@ -694,7 +695,8 @@ int k3_rproc_suspend(struct rproc *rproc)
 	struct device *dev = kproc->dev;
 	int ret = 0;
 
-	if (rproc->state != RPROC_RUNNING)
+	if (rproc->state != RPROC_RUNNING &&
+	    (!kproc->data->suspend_ipc_only || rproc->state != RPROC_ATTACHED))
 		return ret;
 
 	reinit_completion(&kproc->suspend_comp);
@@ -715,11 +717,19 @@ int k3_rproc_suspend(struct rproc *rproc)
 
 	dev_dbg(dev, "suspend ack from remote 0x%x\n", kproc->suspend_status);
 	if (kproc->suspend_status == RP_MBOX_SUSPEND_ACK) {
-		/* shutdown the remote core */
-		ret = rproc_shutdown(rproc);
-		if (ret) {
-			dev_err(dev, "rproc_shutdown failed, ret = %d\n", ret);
-			return -EBUSY;
+		if (rproc->state == RPROC_RUNNING) {
+			/* shutdown the remote core */
+			ret = rproc_shutdown(rproc);
+			if (ret) {
+				dev_err(dev, "rproc_shutdown failed: %d\n", ret);
+				return -EBUSY;
+			}
+		} else {
+			ret = rproc_detach(rproc);
+			if (ret) {
+				dev_err(dev, "rproc_detach failed: %d\n", ret);
+				return -EBUSY;
+			}
 		}
 		kproc->rproc->state = RPROC_SUSPENDED;
 	} else if (kproc->suspend_status == RP_MBOX_SUSPEND_CANCEL) {
@@ -744,7 +754,7 @@ int k3_rproc_resume(struct rproc *rproc)
 	if (rproc->state != RPROC_SUSPENDED)
 		return 0;
 
-	ret = get_core_status(kproc, &cstatus);
+	ret = k3_rproc_get_core_status(kproc, &cstatus);
 	if (ret) {
 		dev_err(dev, "failed to get core status: %d\n", ret);
 		return ret;
