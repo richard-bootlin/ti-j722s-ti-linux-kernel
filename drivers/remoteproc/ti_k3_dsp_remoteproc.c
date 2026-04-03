@@ -231,6 +231,7 @@ static const struct k3_rproc_dev_data c71_data = {
 	.num_mems = ARRAY_SIZE(c71_mems),
 	.boot_align_addr = SZ_2M,
 	.uses_lreset = false,
+	.suspend_ipc_only = true,
 };
 
 static const struct k3_rproc_dev_data c7xv_data = {
