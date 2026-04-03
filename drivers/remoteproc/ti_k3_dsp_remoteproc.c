@@ -24,6 +24,8 @@
 #include "ti_sci_proc.h"
 #include "ti_k3_common.h"
 
+static int k3_dsp_rproc_configure_mode(struct k3_rproc *kproc);
+
 /*
  * Power up the DSP remote processor.
  *
@@ -68,6 +70,146 @@ static const struct rproc_ops k3_dsp_rproc_ops = {
 	.get_loaded_rsc_table	= k3_get_loaded_rsc_table,
 };
 
+static int k3_dsp_rproc_resume(struct rproc *rproc)
+{
+	struct k3_rproc *kproc = rproc->priv;
+	bool cstatus = false;
+	struct device *dev = kproc->dev;
+	int ret = 0;
+
+	dev_pm_qos_update_request(&kproc->qos_req,
+				  PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+
+	if (rproc->state != RPROC_SUSPENDED)
+		return 0;
+
+	ret = k3_rproc_get_core_status(kproc, &cstatus);
+	if (ret) {
+		dev_err(dev, "failed to get core status: %d\n", ret);
+		return ret;
+	}
+
+	if (cstatus) {
+		/* Device is ON/ACTIVE */
+		dev_dbg(dev, "remote core is already on in resume\n");
+		ret = mbox_send_message(kproc->mbox, (void *)(uintptr_t)RP_MBOX_ECHO_REQUEST);
+		if (ret < 0) {
+			dev_err(kproc->dev, "PM mbox_send_message failed: %d\n", ret);
+			return ret;
+		}
+	} else {
+		dev_dbg(dev, "remote core is off in resume\n");
+		ret = ti_sci_proc_request(kproc->tsp);
+		if (ret)
+			dev_err(dev, "proc request failed: %d\n", ret);
+		k3_rproc_reset(kproc);
+
+		ret = k3_dsp_rproc_configure_mode(kproc);
+		if (ret)
+			return -EBUSY;
+
+		rproc_boot(rproc);
+	}
+
+	kproc->rproc->state = RPROC_RUNNING;
+
+	return 0;
+}
+
+/**
+ * PM notifier call.
+ * This is a callback function for PM notifications. On a resume completion
+ * i.e after all the resume driver calls are handled on PM_POST_SUSPEND,
+ * on a deep sleep the remote core is rebooted.
+ */
+static int k3_dsp_rproc_pm_notifier_call(struct notifier_block *bl,
+					 unsigned long state, void *unused)
+{
+	struct k3_rproc *kproc = container_of(bl, struct k3_rproc, pm_notifier);
+	struct rproc *rproc = kproc->rproc;
+
+	switch (state) {
+	case PM_HIBERNATION_PREPARE:
+	case PM_RESTORE_PREPARE:
+	case PM_SUSPEND_PREPARE:
+		break;
+	case PM_POST_HIBERNATION:
+	case PM_POST_RESTORE:
+	case PM_POST_SUSPEND:
+		if (rproc->state == RPROC_SUSPENDED)
+			return k3_dsp_rproc_resume(rproc);
+		break;
+	}
+	return 0;
+}
+
+static int k3_dsp_rproc_configure_mode(struct k3_rproc *kproc)
+{
+	struct rproc *rproc = kproc->rproc;
+	struct device *dev = kproc->dev;
+	bool p_state = false;
+	int ret;
+
+	ret = kproc->ti_sci->ops.dev_ops.is_on(kproc->ti_sci, kproc->ti_sci_id,
+					       NULL, &p_state);
+	if (ret) {
+		dev_err(dev, "failed to get initial state, mode cannot be determined\n");
+		return ret;
+	}
+
+	/* configure J721E devices for either remoteproc or IPC-only mode */
+	if (p_state) {
+		dev_info(dev, "configured DSP for IPC-only mode\n");
+		rproc->state = RPROC_DETACHED;
+		kproc->rproc->ops->prepare = NULL;
+		kproc->rproc->ops->unprepare = NULL;
+		kproc->rproc->ops->start = NULL;
+		kproc->rproc->ops->stop = NULL;
+	} else {
+		dev_info(dev, "configured DSP for remoteproc mode\n");
+		if (kproc->data->uses_lreset) {
+			rproc->ops->prepare = k3_rproc_prepare;
+			rproc->ops->unprepare = k3_rproc_unprepare;
+		}
+		kproc->rproc->ops->start = k3_dsp_rproc_start;
+		kproc->rproc->ops->stop = k3_rproc_stop;
+	}
+
+	/*
+	 * Add support for suspend/resume:
+	 * Use the common notifiers if we suspend only R5F in remoteproc mode
+	 * or the specific notifiers if we suspend R5F in remoteproc or
+	 * IPC only mode
+	 */
+	if (!kproc->data->suspend_ipc_only && !p_state) {
+		kproc->pm_notifier.notifier_call = k3_rproc_pm_notifier_call;
+		register_pm_notifier(&kproc->pm_notifier);
+	}
+
+	if (kproc->data->suspend_ipc_only && !kproc->pm_notifier.notifier_call) {
+		kproc->pm_notifier.notifier_call = k3_dsp_rproc_pm_notifier_call;
+		register_pm_notifier(&kproc->pm_notifier);
+	}
+
+	kproc->late_pm = true;
+
+	if (!dev_pm_qos_request_active(&kproc->qos_req) &&
+	    (kproc->data->suspend_ipc_only || !p_state)) {
+		ret = dev_pm_qos_add_request(dev, &kproc->qos_req,
+					     DEV_PM_QOS_RESUME_LATENCY,
+					     PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		if (ret < 0) {
+			dev_err(dev, "failed to add PM QoS request\n");
+			return ret;
+		}
+		ret = devm_add_action_or_reset(dev, k3_remove_pm_qos_request, kproc);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
 static int k3_dsp_rproc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -76,7 +218,6 @@ static int k3_dsp_rproc_probe(struct platform_device *pdev)
 	struct k3_rproc *kproc;
 	struct rproc *rproc;
 	const char *fw_name;
-	bool p_state = false;
 	int ret = 0;
 
 	data = of_device_get_match_data(dev);
@@ -94,10 +235,6 @@ static int k3_dsp_rproc_probe(struct platform_device *pdev)
 
 	rproc->has_iommu = false;
 	rproc->recovery_disabled = true;
-	if (data->uses_lreset) {
-		rproc->ops->prepare = k3_rproc_prepare;
-		rproc->ops->unprepare = k3_rproc_unprepare;
-	}
 	kproc = rproc->priv;
 	kproc->rproc = rproc;
 	kproc->dev = dev;
@@ -146,32 +283,9 @@ static int k3_dsp_rproc_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "reserved memory init failed\n");
 
-	ret = kproc->ti_sci->ops.dev_ops.is_on(kproc->ti_sci, kproc->ti_sci_id,
-					       NULL, &p_state);
+	ret = k3_dsp_rproc_configure_mode(kproc);
 	if (ret)
-		return dev_err_probe(dev, ret, "failed to get initial state, mode cannot be determined\n");
-
-	/* configure J721E devices for either remoteproc or IPC-only mode */
-	if (p_state) {
-		dev_info(dev, "configured DSP for IPC-only mode\n");
-		rproc->state = RPROC_DETACHED;
-		kproc->rproc->ops->prepare = NULL;
-		kproc->rproc->ops->unprepare = NULL;
-		kproc->rproc->ops->start = NULL;
-		kproc->rproc->ops->stop = NULL;
-	} else {
-		dev_info(dev, "configured DSP for remoteproc mode\n");
-		kproc->pm_notifier.notifier_call = k3_rproc_pm_notifier_call;
-		register_pm_notifier(&kproc->pm_notifier);
-		kproc->late_pm = true;
-		ret = dev_pm_qos_add_request(dev, &kproc->qos_req, DEV_PM_QOS_RESUME_LATENCY,
-					     PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
-		if (ret < 0)
-			return dev_err_probe(dev, ret, "failed to add PM QoS request\n");
-		ret = devm_add_action_or_reset(dev, k3_remove_pm_qos_request, kproc);
-		if (ret)
-			return ret;
-	}
+		return dev_err_probe(dev, ret, "failed to configure rproc\n");
 
 	ret = devm_rproc_add(dev, rproc);
 	if (ret)
@@ -238,6 +352,7 @@ static const struct k3_rproc_dev_data j722s_c7xv_data = {
 	.num_mems = ARRAY_SIZE(c7xv_mems),
 	.boot_align_addr = SZ_2M,
 	.uses_lreset = false,
+	.suspend_ipc_only = true,
 };
 
 static const struct of_device_id k3_dsp_of_match[] = {
