@@ -155,12 +155,16 @@ static int k3_dsp_rproc_probe(struct platform_device *pdev)
 	if (p_state) {
 		dev_info(dev, "configured DSP for IPC-only mode\n");
 		rproc->state = RPROC_DETACHED;
-		kproc->rproc->ops->prepare = NULL;
-		kproc->rproc->ops->unprepare = NULL;
-		kproc->rproc->ops->start = NULL;
-		kproc->rproc->ops->stop = NULL;
 	} else {
 		dev_info(dev, "configured DSP for remoteproc mode\n");
+	}
+
+	/*
+	 * Add support for suspend/resume for both IPC-only and remoteproc mode
+	 * when suspend_ipc_only is set, and only for remoteproc mode when it's
+	 * not set.
+	 */
+	if (kproc->data->suspend_ipc_only || !p_state) {
 		kproc->pm_notifier.notifier_call = k3_rproc_pm_notifier_call;
 		register_pm_notifier(&kproc->pm_notifier);
 		kproc->late_pm = true;
@@ -238,6 +242,7 @@ static const struct k3_rproc_dev_data j722s_c7xv_data = {
 	.num_mems = ARRAY_SIZE(c7xv_mems),
 	.boot_align_addr = SZ_2M,
 	.uses_lreset = false,
+	.suspend_ipc_only = true,
 };
 
 static const struct of_device_id k3_dsp_of_match[] = {
