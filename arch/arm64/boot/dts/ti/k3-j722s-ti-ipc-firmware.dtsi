@@ -116,6 +116,7 @@
 };
 
 &wkup_r5fss0 {
+	compatible = "ti,j722s-r5fss";
 	status = "disabled";
 };
 
@@ -127,6 +128,7 @@
 };
 
 &mcu_r5fss0 {
+	compatible = "ti,j722s-r5fss";
 	status = "okay";
 };
 
@@ -138,6 +140,7 @@
 };
 
 &main_r5fss0 {
+	compatible = "ti,j722s-r5fss";
 	status = "okay";
 };
 
