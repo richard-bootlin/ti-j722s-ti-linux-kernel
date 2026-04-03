@@ -1649,7 +1649,7 @@ static const struct k3_r5_soc_data am65_j721e_soc_data = {
 	.tcm_ecc_autoinit = false,
 	.single_cpu_mode = false,
 	.is_single_core = false,
-	.core_data = &r5_data,
+	.core_data = &r5_jacinto_data,
 };
 
 static const struct k3_r5_soc_data j7200_j721s2_soc_data = {
@@ -1657,7 +1657,7 @@ static const struct k3_r5_soc_data j7200_j721s2_soc_data = {
 	.tcm_ecc_autoinit = true,
 	.single_cpu_mode = false,
 	.is_single_core = false,
-	.core_data = &r5_data,
+	.core_data = &r5_jacinto_data,
 };
 
 static const struct k3_r5_soc_data am64_soc_data = {
