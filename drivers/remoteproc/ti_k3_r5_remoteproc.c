@@ -865,6 +865,7 @@ static int k3_r5_rproc_configure_mode(struct k3_rproc *kproc)
 	u32 atcm_enable, btcm_enable, loczrama;
 	enum cluster_mode mode = cluster->mode;
 	int reset_ctrl_status;
+	int ipc_only = 0;
 	int ret;
 
 	core0 = list_first_entry(&cluster->cores, struct k3_r5_core, elem);
@@ -923,7 +924,7 @@ static int k3_r5_rproc_configure_mode(struct k3_rproc *kproc)
 	if (c_state && !reset_ctrl_status && !halted) {
 		dev_info(cdev, "configured R5F for IPC-only mode\n");
 		kproc->rproc->state = RPROC_DETACHED;
-		ret = 1;
+		ipc_only = 1;
 		/* override rproc ops with only required IPC-only mode ops */
 		kproc->rproc->ops->prepare = NULL;
 		kproc->rproc->ops->unprepare = NULL;
@@ -946,17 +947,17 @@ static int k3_r5_rproc_configure_mode(struct k3_rproc *kproc)
 		ret = devm_add_action_or_reset(cdev, k3_remove_pm_qos_request, kproc);
 		if (ret)
 			return ret;
-		ret = 0;
+		ipc_only = 0;
 	} else {
 		dev_err(cdev, "mismatched mode: local_reset = %s, module_reset = %s, core_state = %s\n",
 			!reset_ctrl_status ? "deasserted" : "asserted",
 			c_state ? "deasserted" : "asserted",
 			halted ? "halted" : "unhalted");
-		ret = -EINVAL;
+		return -EINVAL;
 	}
 
 	/* fixup TCMs, cluster & core flags to actual values in IPC-only mode */
-	if (ret > 0) {
+	if (ipc_only) {
 		if (core == core0)
 			cluster->mode = mode;
 		core->atcm_enable = atcm_enable;
@@ -966,7 +967,7 @@ static int k3_r5_rproc_configure_mode(struct k3_rproc *kproc)
 		kproc->mem[1].dev_addr = loczrama ? K3_R5_TCM_DEV_ADDR : 0;
 	}
 
-	return ret;
+	return ipc_only;
 }
 
 static int k3_r5_core_of_get_internal_memories(struct platform_device *pdev,
