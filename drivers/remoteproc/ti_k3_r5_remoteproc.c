@@ -329,12 +329,6 @@ static int k3_r5_rproc_prepare(struct rproc *rproc)
 	bool mem_init_dis;
 	int ret;
 
-	ret = ti_sci_proc_request(kproc->tsp);
-	if (ret < 0) {
-		dev_err(dev, "ti_sci_proc_request failed, ret = %d\n", ret);
-		return ret;
-	}
-
 	/*
 	 * R5 cores require to be powered on sequentially, core0 should be in
 	 * higher power state than core1 in a cluster. So, wait for core0 to
@@ -474,8 +468,6 @@ static int k3_r5_rproc_unprepare(struct rproc *rproc)
 
 	if (core == core1)
 		wake_up_interruptible(&cluster->core_transition);
-
-	ti_sci_proc_release(kproc->tsp);
 
 	return ret;
 }
@@ -1201,8 +1193,6 @@ init_rmem:
 				ret);
 			goto out;
 		}
-
-		ti_sci_proc_release(kproc->tsp);
 
 		ret = devm_rproc_add(cdev, rproc);
 		if (ret) {
