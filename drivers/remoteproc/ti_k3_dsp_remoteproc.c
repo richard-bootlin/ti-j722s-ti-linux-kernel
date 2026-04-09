@@ -193,6 +193,9 @@ static void k3_dsp_rproc_remove(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
+	if (kproc->pm_notifier.notifier_call)
+		unregister_pm_notifier(&kproc->pm_notifier);
+
 	if (rproc->state == RPROC_ATTACHED) {
 		ret = rproc_detach(rproc);
 		if (ret)
