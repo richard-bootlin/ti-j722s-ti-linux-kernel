@@ -1426,6 +1426,16 @@ static int k3_r5_suspend_late(struct device *dev)
 	return 0;
 }
 
+static void k3_r5_remove(struct platform_device *pdev)
+{
+	struct k3_r5_cluster *cluster = platform_get_drvdata(pdev);
+	struct k3_r5_core *core;
+
+	list_for_each_entry(core, &cluster->cores, elem)
+		if (core->kproc->pm_notifier.notifier_call)
+			unregister_pm_notifier(&core->kproc->pm_notifier);
+}
+
 static int k3_r5_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1590,6 +1600,7 @@ static const struct dev_pm_ops k3_r5_pm_ops = {
 
 static struct platform_driver k3_r5_rproc_driver = {
 	.probe = k3_r5_probe,
+	.remove = k3_r5_remove,
 	.driver = {
 		.name = "k3_r5_rproc",
 		.pm = &k3_r5_pm_ops,
