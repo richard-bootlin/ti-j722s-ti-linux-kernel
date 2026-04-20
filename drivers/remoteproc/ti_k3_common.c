@@ -765,7 +765,6 @@ int k3_rproc_resume(struct rproc *rproc)
 	}
 
 	rproc_boot(rproc);
-	kproc->rproc->state = RPROC_RUNNING;
 
 	return 0;
 }
