@@ -773,6 +773,11 @@ int k3_rproc_suspend(struct rproc *rproc)
 	if (ret == 0) {
 		dev_err(dev, "timedout waiting for rproc suspend ack\n");
 		/* Set constraint to keep the device on */
+		/*
+		 * TODO: what should we do here ?
+		 * Because we will have an attached state with nothing loaded
+		 * in rproc at resume
+		 */
 		dev_pm_qos_update_request(&kproc->qos_req, 0);
 		return 0;
 	};
