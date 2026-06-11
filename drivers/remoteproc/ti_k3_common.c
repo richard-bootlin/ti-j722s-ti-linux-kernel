@@ -722,12 +722,19 @@ int k3_rproc_suspend(struct rproc *rproc)
 			dev_err(dev, "rproc_shutdown failed, ret = %d\n", ret);
 			return -EBUSY;
 		}
-		kproc->rproc->state = RPROC_SUSPENDED;
 	} else if (kproc->suspend_status == RP_MBOX_SUSPEND_CANCEL) {
 		return -EBUSY;
 	} else if (kproc->suspend_status == RP_MBOX_SUSPEND_AUTO) {
-		kproc->rproc->state = RPROC_SUSPENDED;
+		if (rproc->state == RPROC_ATTACHED)
+			rproc_detach(rproc);
 	}
+
+	/*
+	 * We have to release the proc control here otherwise
+	 * TFA will fail at resume
+	 */
+	kproc->rproc->state = RPROC_SUSPENDED;
+	ti_sci_proc_release(kproc->tsp);
 
 	return 0;
 }
@@ -748,6 +755,12 @@ int k3_rproc_resume(struct rproc *rproc)
 	ret = get_core_status(kproc, &cstatus);
 	if (ret) {
 		dev_err(dev, "failed to get core status: %d\n", ret);
+		return ret;
+	}
+
+	ret = ti_sci_proc_request(kproc->tsp);
+	if (ret < 0) {
+		dev_err(dev, "ti_sci_proc_request failed, ret = %d\n", ret);
 		return ret;
 	}
 
