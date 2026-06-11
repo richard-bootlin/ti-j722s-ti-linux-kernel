@@ -40,6 +40,12 @@
 #include "ti_sci_proc.h"
 #include "ti_k3_common.h"
 
+enum core_mode {
+	CORE_MODE_UNKNOWN,
+	CORE_MODE_IPC_ONLY,
+	CORE_MODE_REMOTE_PROC
+};
+
 /**
  * get_core_status - local utility function to check core status
  * @core: remote core pointer used for checking core status
@@ -63,6 +69,63 @@ static int get_core_status(struct k3_rproc *core, bool *cstatus)
 	*cstatus = c_state;
 
 	return 0;
+}
+
+/**
+ * get_core_mode - local utility function to retrieve core mode
+ * @core: remote core pointer used for checking core status
+ *
+ * This utility function is invoked by the resume handler to get remote core
+ * mode (unknown, ipc-only or remoteproc)
+ */
+static enum core_mode get_core_mode(struct k3_rproc *core)
+{
+	const struct ti_sci_handle *ti_sci = core->ti_sci;
+	struct device *cdev = core->dev;
+	enum core_mode ret = CORE_MODE_UNKNOWN;
+	u32 cfg, ctrl, stat, halted;
+	int reset_ctrl_status;
+	bool c_state;
+	u64 boot_vec;
+	int err;
+
+	err = ti_sci->ops.dev_ops.is_on(ti_sci, core->ti_sci_id, NULL, &c_state);
+	if (err) {
+		dev_err(cdev, "failed to get initial state, mode cannot be determined, ret = %d\n",
+			err);
+		goto out;
+	}
+
+	reset_ctrl_status = reset_control_status(core->reset);
+	if (reset_ctrl_status < 0) {
+		dev_err(cdev, "failed to get initial local reset status, ret = %d\n",
+			reset_ctrl_status);
+		goto out;
+	}
+
+	err = ti_sci_proc_get_status(core->tsp, &boot_vec, &cfg, &ctrl, &stat);
+	if (err < 0) {
+		dev_err(cdev, "failed to get initial processor status, ret = %d\n",
+			err);
+		goto out;
+	}
+
+	halted = ctrl & 0x1;
+
+	/*
+	 * IPC-only mode detection requires both local and module resets to
+	 * be deasserted and R5F core to be unhalted. Local reset status is
+	 * irrelevant if module reset is asserted (POR value has local reset
+	 * deasserted), and is deemed as remoteproc mode
+	 */
+	if (c_state && !reset_ctrl_status && !halted) {
+		ret = CORE_MODE_IPC_ONLY;
+	} else if (!c_state) {
+		ret = CORE_MODE_REMOTE_PROC;
+	}
+
+out:
+	return ret;
 }
 
 /**
@@ -767,6 +830,13 @@ int k3_rproc_resume(struct rproc *rproc)
 	if (cstatus) {
 		/* Device is ON/ACTIVE */
 		dev_dbg(dev, "remote core is already on in resume\n");
+		if (get_core_mode(kproc) == CORE_MODE_IPC_ONLY)
+			/*
+			 * If it's already on in resume, it's because it has been
+			 * loaded by another core
+			 */
+			rproc->state = RPROC_DETACHED;
+
 		ret = mbox_send_message(kproc->mbox, (void *)(uintptr_t)RP_MBOX_ECHO_REQUEST);
 		if (ret < 0) {
 			dev_err(kproc->dev, "PM mbox_send_message failed: %d\n", ret);
