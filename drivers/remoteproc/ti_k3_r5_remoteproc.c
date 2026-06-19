@@ -686,7 +686,7 @@ static const struct rproc_ops k3_r5_rproc_ops = {
  * both the cores with the same settings, before reconfiguing again for
  * LockStep mode.
  */
-static int k3_r5_rproc_configure(struct k3_rproc *kproc)
+static int k3_r5_rproc_configure(struct k3_rproc *kproc, int ipc_only)
 {
 	struct k3_r5_core *temp, *core0, *core = kproc->priv;
 	struct k3_r5_cluster *cluster = core->cluster;
@@ -770,6 +770,15 @@ static int k3_r5_rproc_configure(struct k3_rproc *kproc)
 	else
 		clr_cfg |= PROC_BOOT_CFG_FLAG_R5_TCM_RSTBASE;
 
+	/* cache set_cfg and clr_cfg */
+	core->boot_vec = boot_vec;
+	core->set_cfg = set_cfg;
+	core->clr_cfg = clr_cfg;
+
+	if (ipc_only)
+		/* don't halt the core in ipc_only mode */
+		goto out;
+
 	if (cluster->mode == CLUSTER_MODE_LOCKSTEP) {
 		/*
 		 * work around system firmware limitations to make sure both
@@ -804,10 +813,6 @@ static int k3_r5_rproc_configure(struct k3_rproc *kproc)
 					     set_cfg, clr_cfg);
 	}
 
-	/* cache set_cfg and clr_cfg */
-	core->boot_vec = boot_vec;
-	core->set_cfg = set_cfg;
-	core->clr_cfg = clr_cfg;
 out:
 	return ret;
 }
@@ -1184,13 +1189,11 @@ static int k3_r5_cluster_rproc_init(struct platform_device *pdev)
 			goto out;
 		}
 
-		if (!ipc_only) {
-			ret = k3_r5_rproc_configure(kproc);
-			if (ret) {
-				dev_err(cdev, "initial configure failed, ret = %d\n",
-					ret);
-				goto out;
-			}
+		ret = k3_r5_rproc_configure(kproc, ipc_only);
+		if (ret) {
+			dev_err(cdev, "initial configure failed, ret = %d\n",
+				ret);
+			goto out;
 		}
 
 		if (!ipc_only || kproc->data->suspend_ipc_only) {
