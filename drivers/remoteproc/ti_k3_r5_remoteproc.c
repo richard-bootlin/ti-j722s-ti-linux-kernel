@@ -1081,7 +1081,7 @@ static int k3_r5_cluster_rproc_init(struct platform_device *pdev)
 	struct device *cdev;
 	const char *fw_name;
 	struct rproc *rproc;
-	int ret, ret1;
+	int ret, ret1, ipc_only;
 
 	core1 = list_last_entry(&cluster->cores, struct k3_r5_core, elem);
 	list_for_each_entry(core, &cluster->cores, elem) {
@@ -1170,10 +1170,12 @@ static int k3_r5_cluster_rproc_init(struct platform_device *pdev)
 		if (ret)
 			return ret;
 
-		ret = k3_r5_rproc_configure_mode(kproc);
-		if (ret < 0)
+		ipc_only = k3_r5_rproc_configure_mode(kproc);
+		if (ipc_only < 0) {
+			ret = ipc_only;
 			goto out;
-		if (ret)
+		}
+		if (ipc_only)
 			goto init_rmem;
 
 		ret = k3_r5_rproc_configure(kproc);
